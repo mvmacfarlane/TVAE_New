@@ -43,17 +43,27 @@ class ContextProblem():
 
             #return 2*torch.rand(size = (size,5))
             #return 2*torch.normal(mean = 0, std = 1,size = (size,(self.num_var*self.deg) + 1))
+        
+            
             single_problem_1 = torch.Tensor([-1,0,0,2,0])
             #single_problem_2 = torch.Tensor([1,0,0,2,1])
-            #single_problem_3 = torch.Tensor([0,1,2,0,2])
-            #single_problem_4 = torch.Tensor([0,-1,2,0,3])
+            single_problem_3 = torch.Tensor([0,1,2,0,2])
+            single_problem_4 = torch.Tensor([0,-1,2,0,3])
 
             #single_problem_1 = torch.Tensor([2,-1,-1,-1,0])
             #single_problem_2 = torch.Tensor([1,-1,-1,-1,1])
             #single_problem_3 = torch.Tensor([-2,-1,-1,-1,2])
 
-            return single_problem_1.repeat(size,1)
-            """
+            #return single_problem_1.repeat(size,1)
+
+            batch_1 = single_problem_1.repeat(int(size/2),1)
+            #batch_2 = single_problem_2.repeat(int(size/4),1)
+            #batch_3 = single_problem_3.repeat(int(size/4),1)
+            batch_4 = single_problem_4.repeat(int(size/2),1)
+
+            return single_problem_3.repeat(size,1)
+            return torch.cat((batch_1,batch_4),dim=0)
+            
             single_problem_4 = torch.Tensor([-1,-1,-1,-1,3])
 
             batch_1 = single_problem_1.repeat(int(size/4),1)
@@ -62,9 +72,9 @@ class ContextProblem():
             batch_4 = single_problem_4.repeat(int(size/4),1)
 
             return torch.cat((batch_1,batch_2,batch_3,batch_4),dim=0)
-            #return torch.cat((batch_2,batch_3),dim=0)
+            return torch.cat((batch_2,batch_3),dim=0)
             return single_problem_3.repeat(size,1)
-            """
+            
         else:
             single_problem = torch.Tensor([1,0,0,2])
             return single_problem.repeat(size,1)

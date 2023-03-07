@@ -3,7 +3,7 @@ import os
 from torch.utils.tensorboard import SummaryWriter
 from torch.distributions.uniform import Uniform
 import utils
-
+import torch.nn as nn
 
 #Just getting rid of the advatnage multiplication
 def calculate_weighted_RC_loss(solution_logp,advantage,weighted,weighting_temp):
@@ -34,6 +34,24 @@ def calculate_change_loss(solution_logp):
 
     return Loss
 
+
+def calculate_value_pred_loss(pred,target):
+
+    assert pred.shape == target.shape
+
+    error = pred - target
+    error_squared = torch.pow(error,2)
+
+    return error_squared.mean()
+
+def calculate_best_pred_loss(pred,target):
+
+    assert pred.shape == target.shape
+
+    loss = nn.BCELoss()
+    output = loss(pred, target)
+
+    return output
 
 
 

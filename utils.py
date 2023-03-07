@@ -1,8 +1,50 @@
 import numpy as np
 import zipfile
 import pickle
+from matplotlib.lines import Line2D
+
+import torch
+import torch.nn as nn
+import torch.utils.data
+import torch.optim
+from torch.distributions import MultivariateNormal
+from torch.distributions.uniform import Uniform
+from diffusion import Diffusion
+from torch.distributions import Categorical
+
+def plot_grad_flow(named_parameters):
+    '''Plots the gradients flowing through different layers in the net during training.
+    Can be used for checking for possible gradient vanishing / exploding problems.
+    
+    Usage: Plug this function in Trainer class after loss.backwards() as 
+    "plot_grad_flow(self.model.named_parameters())" to visualize the gradient flow'''
+    ave_grads = []
+    max_grads= []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean().cpu())
+            max_grads.append(p.grad.abs().max().cpu())
+    plt.bar(np.arange(len(max_grads)), max_grads, alpha=0.1, lw=1, color="c")
+    plt.bar(np.arange(len(max_grads)), ave_grads, alpha=0.1, lw=1, color="b")
+    plt.hlines(0, 0, len(ave_grads)+1, lw=2, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(left=0, right=len(ave_grads))
+    #plt.ylim(bottom = -0.001, top=0.02) # zoom in on the lower gradient regions
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow")
+    plt.grid(True)
+    plt.legend([Line2D([0], [0], color="c", lw=4),
+                Line2D([0], [0], color="b", lw=4),
+                Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
 
 
+    plt.gcf().set_size_inches(8, 4)   # adjust the figure size as desired
+    plt.tight_layout()      
+
+    plt.savefig("data/test.png")
 """
 def read_instance_data_tsp(problem_size, nb_instances, instance_file, solution_file, offset=0):
 
@@ -167,7 +209,7 @@ import pandas as pd
 from torch.distributions.uniform import Uniform
 
 
-
+"""
 def evaluation_grapher(
     
     encoded_mu,
@@ -303,7 +345,7 @@ def evaluation_grapher(
     writer.add_scalar("Min Uniform Decoding Cost", torch.min(decoded_uniform_solution_cost), epoch_idx)
 
     #writer.close()
-
+"""
     
 
 def generate_uniform_vectors(number,num_var):
@@ -329,17 +371,21 @@ def evaluation_plotting(plotting_data,writer,epoch_idx,name,min_val,max_val,limi
 
     latent = plotting_data["latent_encoding"].to("cpu")
 
+    #limit_max = 15
+    #limit_min = -15
 
-
+    
     if limit_max is None:
         limit_max = torch.max(latent).item()
     if limit_min is None:
         limit_min = torch.min(latent).item()
+    
 
     #for data in ["x coord","y coord","decoding optimality"]:
     #    print(plotting_data[data].to("cpu").shape)
+    #Not sure what these things are all for, do we need them all now
     if evaluation:
-        eval = ["x coord","y coord","optimality","rewards","context"]
+        eval = ["x coord","y coord","optimality","rewards","context","predicted_rewards"]
     elif context:
         eval = ["x coord","y coord","rewards","context"]
     else:
@@ -404,3 +450,43 @@ def evaluation_plotting(plotting_data,writer,epoch_idx,name,min_val,max_val,limi
 
     writer.add_figure(name, figs, epoch_idx)
     
+
+
+def get_layers(input_dim,output_dim,act_output,act_type,num = 0):
+
+    layers = []
+
+    if num == 0:
+        layers.append(nn.Linear(input_dim,output_dim))
+    else:
+        layers.append(nn.Linear(input_dim,128))
+
+        if act_type == "tanh":
+            layers.append(nn.Tanh())
+        elif act_type == "Relu":
+            layers.append(nn.ReLU())
+        else:
+            raise Exception("Error")
+
+        for i in range(num):
+            layers.append(nn.Linear(128,128))
+
+            if act_type == "tanh":
+                layers.append(nn.Tanh())
+            elif act_type == "Relu":
+                layers.append(nn.ReLU())
+            else:
+                raise Exception("Error")
+
+
+        layers.append(nn.Linear(128,output_dim))
+
+    if act_output:
+        if act_type == "tanh":
+            layers.append(nn.Tanh())
+        elif act_type == "Relu":
+            layers.append(nn.ReLU())
+        else:
+            raise Exception("Error")
+
+    return nn.Sequential(*layers)

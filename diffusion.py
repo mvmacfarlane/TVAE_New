@@ -18,11 +18,47 @@ from IPython.display import display, clear_output
 
 import math
 
+from tqdm import tqdm
+
+class ConditionalLinear(nn.Module):
+    def __init__(self, num_in, num_out, n_steps):
+        super(ConditionalLinear, self).__init__()
+        self.num_out = num_out
+        self.lin = nn.Linear(num_in, num_out)
+        self.embed = nn.Embedding(n_steps, num_out)
+        self.embed.weight.data.uniform_()
+
+    def forward(self, x, y):
+        out = self.lin(x)
+
+        gamma = self.embed(y)
+
+        out = gamma.view(-1, self.num_out) * out
+        return out
+        
+class ConditionalModel(nn.Module):
+    def __init__(self, n_steps):
+        super(ConditionalModel, self).__init__()
+        self.lin1 = ConditionalLinear(2, 128, n_steps)
+        self.lin2 = ConditionalLinear(128, 128, n_steps)
+        self.lin3 = ConditionalLinear(128, 128, n_steps)
+        self.lin4 = nn.Linear(128, 2)
+    
+    def forward(self, x, y):
+        x = F.softplus(self.lin1(x, y))
+        x = F.softplus(self.lin2(x, y))
+        x = F.softplus(self.lin3(x, y))
+
+
+        return self.lin4(x)
+    
+
+
 
 
 class Diffusion(nn.Module):
 
-    def __init__(self,steps,latent_size,num_var,deg):
+    def __init__(self,steps,latent_size,num_var,deg,improver,improver2):
         super(Diffusion, self).__init__()
 
         self.num_timesteps = steps
@@ -30,11 +66,15 @@ class Diffusion(nn.Module):
         #self.dim = 2
         self.latent_size = latent_size
 
+        self.improver = improver
+
+        self.improver2 = improver2
+
         #self.time_dim = self.dim * 4
 
         #Parameterisation of the reverse process
         layers = []
-        layers.append(nn.Linear(latent_size+1+num_var*deg + 1,128))   #latent size,time,context,advantage
+        layers.append(nn.Linear(latent_size+1+num_var*deg,128))   #latent size,time,context,advantage
         layers.append(nn.ReLU())
         layers.append(nn.Linear(128,128))
         layers.append(nn.ReLU())
@@ -42,7 +82,22 @@ class Diffusion(nn.Module):
         layers.append(nn.ReLU())
         layers.append(nn.Linear(128,self.latent_size))
 
-        self.model = torch.nn.Sequential(*layers)
+        self.outy = torch.nn.Sequential(*layers)
+
+        #Parameterisation of the reverse process
+        layers = []
+        layers.append(nn.Linear(latent_size + 1,128))   #latent size,time,context,advantage
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(128,128))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(128,128))
+        layers.append(nn.ReLU())
+        layers.append(nn.Linear(128,self.latent_size))
+
+        #self.outy2 = torch.nn.Sequential(*layers)
+
+        self.outy2 = ConditionalModel(n_steps=self.num_timesteps)
+
 
         #Embedding for the time index
         layers = []
@@ -53,6 +108,9 @@ class Diffusion(nn.Module):
         layers.append(nn.Linear(128,1))
 
         self.time_mlp = torch.nn.Sequential(*layers)
+
+        #self.time_mlp = nn.Embedding(100, num_out)
+        #self.time_mlp.weight.data.uniform_()
 
         #Context
         layers = []
@@ -72,72 +130,72 @@ class Diffusion(nn.Module):
             nn.Linear(self.time_dim, self.time_dim),
         )
         """
+        
 
         self.loss = torch.nn.MSELoss()
 
+        self.min = None
+        self.max = None
 
 
 
-    def generate_sample(self,num,context,advantage,device):
 
-        advantage = advantage
+    def generate_sample_good(self,num,context,advantage,device,gradient):
+
+        #advantage = advantage
+        z_total = None
+
+        #Scheduling parameters
+        alphas,alphas_cumprod,betas,alphas_cumprod_prev = self.generate_alpha(device = device)
 
         #Initial sample
         z = torch.normal(mean = 0, std = 1,size = (num,self.latent_size)).to(device)
 
-        #Scheduling parameters
-        alphas,alphas_cumprod,betas,alphas_cumprod_prev = self.generate_alpha()
-
-        alphas = alphas.to(device)
-        alphas_cumprod = alphas_cumprod.to(device)
-        betas = betas.to(device)
-        alphas_cumprod_prev = alphas_cumprod_prev.to(device)
-
-        
-
+        #Iterative generation of sample
         for i in reversed(range(1,self.num_timesteps+1)):
 
-            
-
-            #Create t as a tensor
+            #Create time as a tensor
             t = i*torch.ones(size = (z.shape[0],1)).to(device)
+
 
             t_embed = self.time_mlp(t)
 
+            #t = t.type(torch.int64) - 1 #Used for indexing so subtraction occures here
 
-            
-
-            
-            t = t.type(torch.int64) - 1 #Used for indexing so subtraction occures here
-        
-            #Noise is zero at time step 0
             time_0 = (t > 1).int()
             m = time_0*torch.normal(mean = 0, std = 1,size = (num,self.latent_size)).to(device)
 
+
+
             #Noise prediction
-            
-            prediction = self.predict_noise(z,t_embed,context,advantage)
-            
+
+            noise_prediction = self.predict_noise(z,t)
 
 
-            alphas_t = self.extract(alphas, t.squeeze(dim=1),z.shape)
+            t = t.type(torch.int64) - 1 #Used for indexing so subtraction occures here
+
+            #Extracting 
             alphas_cumprod_t = self.extract(alphas_cumprod, t.squeeze(dim=1),z.shape)
             alphas_cumprod_prev_t = self.extract(alphas_cumprod_prev, t.squeeze(dim=1),z.shape)
+            alphas_t = self.extract(alphas, t.squeeze(dim=1),z.shape)
             betas_t = self.extract(betas, t.squeeze(dim=1),z.shape)
 
+            gradient_value = self.improver2.get_grad(z,context.to(device),device)
 
-            posterior_variance = betas_t * (1. - alphas_cumprod_prev_t) / (1. - alphas_cumprod_t)
+            #What step size are we going to use for this
+            if gradient is not None:
+                noise_prediction = noise_prediction - torch.sqrt(1-alphas_cumprod_t)*gradient*gradient_value
 
+            #Updated Z
+            z = torch.sqrt(alphas_cumprod_prev_t)*(torch.reciprocal(torch.sqrt(alphas_cumprod_t))*(z -torch.sqrt(1-alphas_cumprod_t)*noise_prediction)) + torch.sqrt(1-alphas_cumprod_prev_t)*noise_prediction
 
-            #Update z
-            z = (1/torch.sqrt(alphas_t))*(z - ((1-alphas_t)/torch.sqrt(1-alphas_cumprod_t))*prediction) + torch.sqrt(betas_t)*m
+            #z = (1/torch.sqrt(alphas_t))*(z - ((1-alphas_t)/torch.sqrt(1-alphas_cumprod_t))*noise_prediction) + torch.sqrt(betas_t)*m
 
-            
-
+        z = self.scale_up(z)
 
 
         return z
-
+    
     def linear_beta_schedule(self,timesteps):
 
         beta_start = 0.0001
@@ -145,7 +203,7 @@ class Diffusion(nn.Module):
 
         return torch.linspace(beta_start, beta_end, timesteps)
 
-    def generate_alpha(self):
+    def generate_alpha(self,device = None):
 
         # define beta schedule (variance schedule)
         betas = self.linear_beta_schedule(timesteps=self.num_timesteps)
@@ -155,47 +213,83 @@ class Diffusion(nn.Module):
         alphas_cumprod = torch.cumprod(alphas, axis=0)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
 
-        return alphas,alphas_cumprod,betas,alphas_cumprod_prev
+        if device is not None:
+            return alphas.to(device),alphas_cumprod.to(device),betas.to(device),alphas_cumprod_prev.to(device)
+        else:
+            return alphas,alphas_cumprod,betas,alphas_cumprod_prev
 
 
+    #Question of whether this is correct
     def extract(self,a, t, x_shape):
 
         batch_size = t.shape[0]
         out = a.gather(-1, t)
+        fin  =out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
 
-        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
+
+        return fin
 
     def generate_targets(self,x0,t,device):
 
-        alphas,alphas_cumprod,betas,alphas_cumprod_prev = self.generate_alpha()
+        alphas,alphas_cumprod,betas,alphas_cumprod_prev = self.generate_alpha(device = device)
+        alphas_cumprod_t = self.extract(alphas_cumprod.to(device), t.squeeze(dim=1) - 1,x0.shape)
+
 
         noise = torch.normal(mean = 0, std = 1,size = x0.shape).to(device)
 
+        x_t = torch.sqrt(alphas_cumprod_t)*x0 + torch.sqrt(1-alphas_cumprod_t)*noise
+
+        #alphas_cumprod_t = self.extract(alphas_cumprod.to(device), t.squeeze(dim=1) - 1,x0.shape)
+        #betas_t = self.extract(betas.to(device), t.squeeze(dim=1) - 1,x0.shape)
+
+        return noise,x_t
+    
+    def predict_value(self,x):
+        x = self.scale_down(x)
+        return self.improver.predict_value(x)
+    
+    def predict_best(self,x):
+
+        x = self.scale_down(x)
+
+        logit = self.improver2.predict_value(x)
+
+        m = nn.Sigmoid()
+
+        prob = m(logit)
+
+        return prob
+    
+    def scale_down(self,z):
+        z = 2*(z- self.min)/(self.max-self.min) - 1
+
+        return z
+    
+    def scale_up(self,z):
+        z = (((z + 1)/2)*((self.max-self.min))) + self.min
+
+        return z
+        
 
 
-        alphas_t = self.extract(alphas.to(device), t.squeeze(dim=1) - 1,x0.shape)
-        alphas_cumprod_t = self.extract(alphas_cumprod.to(device), t.squeeze(dim=1) - 1,x0.shape)
-        betas_t = self.extract(betas.to(device), t.squeeze(dim=1) - 1,x0.shape)
 
-        data = torch.sqrt(alphas_cumprod_t)*x0 + torch.sqrt(1-alphas_cumprod_t)*noise
+    def predict_noise(self,z,t):
 
-        return noise,data
+        #t_embed = self.time_mlp(t.float())
 
-    def predict_noise(self,z,t,context,advantage):
-        device = z.device
-        context = self.context_embedding(context.to(device)[:,0:-1])
+        #first we need to scale this down
+        #z = self.scale_down(z)
+        
+        noise_prediction = self.outy2(z,t.long() - 1)
 
-        advantage = advantage.masked_fill(advantage < 0,0)
-        advantage = (advantage.masked_fill(advantage > 0,1).to(device))
+        return noise_prediction
+    
 
 
-
-        x = torch.cat((z,t,context.to(device),advantage),dim=1)
-        return self.model(x)
 
     def calculate_loss(self,x0,context,advantage):
 
-        advantage = advantage
+        x0 = self.scale_down(x0)
 
         device = x0.device
 
@@ -204,11 +298,7 @@ class Diffusion(nn.Module):
 
         t = torch.randint(1,self.num_timesteps + 1, (x0.shape[0],1)).to(device)
 
-
-
-        t_embed = self.time_mlp(t.float())
-
-        
+        #t_embed = self.time_mlp(t.float())
 
         t = t.type(torch.int64)
 
@@ -216,11 +306,19 @@ class Diffusion(nn.Module):
         noise,data = self.generate_targets(x0,t,device)
 
         #Predict the noise we added from final value
-        prediction = self.predict_noise(data,t_embed,context,advantage)
+        prediction = self.predict_noise(z = data, t = t)
 
         assert prediction.shape == noise.shape
 
+        
+
         loss = self.loss(prediction,noise)
+
+        #loss = torch.mean(loss,dim=1,keepdim=True)
+        #advantage_weights = torch.exp(10*advantage)
+        #assert loss.shape == advantage_weights.shape
+        #scaled_loss = advantage_weights*loss
+        #scaled_loss_mean = torch.mean(scaled_loss)
 
         return loss
         
